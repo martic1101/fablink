@@ -30,7 +30,7 @@ import random
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Set, Tuple
 
 from app.secs.codec import Item
 from app.secs.hsms import ConnectionClosed, HsmsConnection, SecsMessage, T3Timeout
@@ -174,6 +174,7 @@ class SimTool:
         self.rng = random.Random(self.seed)
         self.wear = self.initial_wear
         self._tasks: List[asyncio.Task] = []
+        self._writers: Set[asyncio.StreamWriter] = set()  # every accepted connection
 
     # ---- scenario controls -------------------------------------------------------------------
     def status(self) -> Dict[str, object]:
@@ -236,9 +237,23 @@ class SimTool:
             await self.conn.close()
         if self._server:
             self._server.close()
-            await self._server.wait_closed()
+            # Since Python 3.12.1, wait_closed() also waits for every accepted
+            # connection to close, so close them all ourselves (3.9 returned at once).
+            for writer in list(self._writers):
+                writer.close()
+            try:
+                await asyncio.wait_for(self._server.wait_closed(), timeout=5)
+            except asyncio.TimeoutError:
+                log.warning("%s: connections still open after stop", self.spec.tool_id)
 
     async def _on_connect(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self._writers.add(writer)
+        try:
+            await self._serve_connection(reader, writer)
+        finally:
+            self._writers.discard(writer)
+
+    async def _serve_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         if asyncio.get_event_loop().time() < self._blocked_until:
             writer.close()  # "cable pulled"
             return
