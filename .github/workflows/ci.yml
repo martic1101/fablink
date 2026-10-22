@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.9", "3.12"]
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check . && ruff format --check .
+      - run: pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  # Full stack on PostgreSQL: the tools must come online and real lots must complete.
+  e2e-postgres:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up -d --build
+      - name: Wait for 4 tools online and a completed lot
+        run: |
+          for i in $(seq 1 60); do
+            online=$(curl -sf localhost:8000/api/status | jq -r .equipment_online || echo 0)
+            done_lots=$(curl -sf "localhost:8000/api/lots?status=COMPLETED" | jq length || echo 0)
+            echo "online=$online completed=$done_lots"
+            if [ "$online" = "4" ] && [ "$done_lots" -gt 0 ]; then exit 0; fi
+            sleep 5
+          done
+          docker compose logs app
+          exit 1
+      - if: always()
+        run: docker compose down -v

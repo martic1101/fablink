@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fab
+      POSTGRES_PASSWORD: fab
+      POSTGRES_DB: fab
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fab"]
+      interval: 2s
+      retries: 20
+
+  simulator:
+    build: .
+    command: ["python", "-m", "simulator", "--host", "0.0.0.0", "--control-host", "0.0.0.0", "--speed", "3"]
+
+  app:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://fab:fab@db:5432/fab
+      FAB_EQUIPMENT: ETCH01@simulator:5001,ETCH02@simulator:5002,CVD01@simulator:5003,CVD02@simulator:5004
+      SIM_CONTROL_URL: http://simulator:8100
+    depends_on:
+      db:
+        condition: service_healthy
+      simulator:
+        condition: service_started

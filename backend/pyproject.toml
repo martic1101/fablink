@@ -1,0 +1,19 @@
+[project]
+name = "fablink"
+version = "1.0.0"
+description = "Equipment automation (SECS/GEM) and predictive maintenance platform"
+requires-python = ">=3.9"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+markers = ["integration: spins up simulated tools and the full host"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["UP006", "UP007", "UP035", "UP045", "B008", "E741"]
