@@ -331,3 +331,20 @@ async def test_pause_freezes_tools_and_dispatcher(fab):
     assert link.connected  # the HSMS link stays up while paused
     await host.set_running(True)
     await wait_for(lambda: _is(lambda: sim._dataid > events))
+
+
+async def test_stop_lets_in_flight_work_finish(fab):
+    """Regression: stop() used to cancel the dispatcher and message handlers in
+    the middle of database work, which could leave an aiosqlite connection that
+    never finished closing and hang the next teardown (engineering notes #11)."""
+    host, sims = await fab()
+    await wait_for(lambda: _is(lambda: sims[0].state == "PROCESSING"))
+    await host.stop()
+    leftover = [
+        t
+        for t in asyncio.all_tasks()
+        if not t.done()
+        and any(k in repr(t) for k in ("FabHost._dispatch_loop", "EquipmentLink._run", "_terminate_graceful"))
+    ]
+    assert leftover == []
+    assert not host.links["ETCH01"].conn._handlers  # every handler ran to completion

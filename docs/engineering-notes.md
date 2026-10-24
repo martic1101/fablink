@@ -181,7 +181,46 @@ the current lot finishes.
 `test_simulator.py::test_technician_does_pm_locally_and_tool_reports_it`,
 `test_simulator.py::test_tool_in_local_control_refuses_remote_commands`.
 
-## 10. Smaller ones
+## 10. CI hung for five hours on Python 3.12
+
+**Symptom.** The first CI run on GitHub: Python 3.9 passed in 40 s, the 3.12
+job was still running five hours later. The log stopped after 72 tests.
+
+**Root cause.** Since Python 3.12.1, `asyncio.Server.wait_closed()` waits
+until every accepted client connection has closed; on 3.9 it returned at
+once. The simulated tool's `stop()` called it during test teardown while a
+connection could still be open, so teardown waited forever on 3.12 only.
+
+**Fix.** Each simulated tool tracks the connections it accepted and closes
+them before waiting, with a time limit as a backstop. CI also got
+`pytest-timeout` (no test may run past 120 s) and a `conftest.py` hook that
+prints every pending asyncio task after 45 s, so a hang now fails fast and
+says where it is stuck.
+
+## 11. Shutdown cancelled database work mid-query
+
+**Symptom.** With the timeout in place, a later run on Python 3.9 stopped
+after 62 tests. The new diagnostic printed a single pending task:
+SQLAlchemy's `_terminate_graceful_close` for an aiosqlite connection,
+waiting while pytest closed the event loop.
+
+**Root cause.** `FabHost.stop()` and the gateway *cancelled* the dispatcher
+loop and the tasks handling tool messages, which could be in the middle of a
+database transaction, and the engine was disposed right after. A connection
+interrupted mid-query could not finish closing. It was rare and timing
+dependent, and it affects the server's real shutdown path, not just tests.
+
+**Fix.** Orderly shutdown: stop taking new work (a stop flag that the loops
+check, and an event that wakes the reconnect backoff), close the HSMS
+session, *wait* for the run loop and every in-flight message handler to
+finish (`HsmsConnection.drain()`), and only cancel what is still running
+after a grace period.
+
+**Test.** `test_integration.py::test_stop_lets_in_flight_work_finish` stops
+the host mid-production and checks that no dispatcher, link or
+connection-close task is left behind.
+
+## 12. Smaller ones
 
 - **Timestamps.** SQLite returns naive datetimes even for timezone-aware
   columns, so the browser showed UTC times as local time. All API timestamps

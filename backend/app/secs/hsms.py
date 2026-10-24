@@ -27,7 +27,7 @@ import logging
 import struct
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Awaitable, Callable, Dict, Optional, Tuple
+from typing import Awaitable, Callable, Dict, Optional, Set, Tuple
 
 from .codec import Item, decode, encode
 
@@ -149,6 +149,9 @@ class HsmsConnection:
         self.selected = asyncio.Event()
         self.closed = asyncio.Event()
         self._tasks: list = []
+        # Handlers for primaries we received; they may still be writing to the
+        # database after the link closes, so shutdown waits for them (drain()).
+        self._handlers: Set[asyncio.Task] = set()
 
     # ---- lifecycle --------------------------------------------------------------------
     def start(self) -> None:
@@ -176,6 +179,16 @@ class HsmsConnection:
             await self._writer.wait_closed()
         except (ConnectionError, OSError):
             pass
+
+    async def drain(self, timeout: float) -> None:
+        """Wait for message handlers that are still running, then cancel any
+        stragglers. Call after close() during an orderly shutdown."""
+        if not self._handlers:
+            return
+        _, pending = await asyncio.wait(set(self._handlers), timeout=timeout)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
     # ---- sending ----------------------------------------------------------------------
     @classmethod
@@ -267,7 +280,9 @@ class HsmsConnection:
                 self._resolve(msg)
             else:
                 # Handle primaries concurrently so a slow handler can't stall replies.
-                asyncio.ensure_future(self._handle_primary(msg))
+                task = asyncio.ensure_future(self._handle_primary(msg))
+                self._handlers.add(task)
+                task.add_done_callback(self._handlers.discard)
 
     def _is_reply(self, msg: SecsMessage) -> bool:
         """A data message is a reply only if its system bytes match a pending

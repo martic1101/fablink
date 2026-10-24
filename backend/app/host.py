@@ -98,6 +98,7 @@ class FabHost:
         self.auto_work_orders = True  # hand work orders to technicians without an engineer clicking
         self.auto_lots = True
         self._tasks: List[asyncio.Task] = []
+        self._stopping = False
         # work order id -> loop time of the next send attempt after a failure
         self._send_retry_at: Dict[int, float] = {}
 
@@ -160,8 +161,18 @@ class FabHost:
             self._tasks.append(asyncio.ensure_future(self._dispatch_loop()))
 
     async def stop(self) -> None:
-        for t in self._tasks:
-            t.cancel()
+        """Orderly shutdown, before the caller disposes the database engine:
+        stop taking on new work, let in-flight database work finish, and cancel
+        only what is still running after a grace period. (Cancelling mid-query
+        once left an aiosqlite connection that never closed; see engineering
+        notes #11.)"""
+        self._stopping = True
+        if self._tasks:
+            grace = self.settings.dispatch_interval + 5
+            _, pending = await asyncio.wait(set(self._tasks), timeout=grace)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
         for link in self.links.values():
             await link.stop()
 
@@ -795,7 +806,7 @@ class FabHost:
 
     # ---- dispatcher -------------------------------------------------------------------------
     async def _dispatch_loop(self) -> None:
-        while True:
+        while not self._stopping:
             try:
                 await self.dispatch_once()
             except asyncio.CancelledError:

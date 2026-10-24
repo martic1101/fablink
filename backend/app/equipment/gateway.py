@@ -101,28 +101,47 @@ class EquipmentLink:
         self.replay_count = 0
         self.first_trace_pending = False
         self._task: Optional[asyncio.Task] = None
+        self._stopping = False
+        self._stop_event: Optional[asyncio.Event] = None
 
     # ---- lifecycle --------------------------------------------------------------------------
     def start(self) -> None:
+        self._stop_event = asyncio.Event()
         self._task = asyncio.ensure_future(self._run())
 
-    async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
+    async def stop(self, timeout: float = 5.0) -> None:
+        """Orderly shutdown: end the session, let the run loop and in-flight
+        message handlers finish their database work, and only cancel what is
+        still running after ``timeout``. Cancelling a task in the middle of a
+        query can leave a database connection that never finishes closing."""
+        self._stopping = True
+        if self._stop_event:
+            self._stop_event.set()
         if self.conn:
             await self.conn.close()
+        if self._task:
+            done, _ = await asyncio.wait({self._task}, timeout=timeout)
+            if not done:
+                self._task.cancel()
+                await asyncio.gather(self._task, return_exceptions=True)
+        if self.conn:
+            await self.conn.drain(timeout)
 
     def _act(self, kind: str, text: str, data: Optional[dict] = None) -> None:
         if self._on_activity:
             self._on_activity(self, kind, text, data)
 
+    async def _pause(self, seconds: float) -> None:
+        """Sleep, but wake up at once when stop() is called."""
+        assert self._stop_event is not None
+        try:
+            await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
+        except asyncio.TimeoutError:
+            pass
+
     async def _run(self) -> None:
         backoff = 0.5
-        while True:
+        while not self._stopping:
             try:
                 await self._session()
             except asyncio.CancelledError:
@@ -149,13 +168,18 @@ class EquipmentLink:
                     f"Next attempt in {backoff:g} s.",
                     {"backoff": backoff},
                 )
-            await asyncio.sleep(backoff)
+            if self._stopping:
+                return
+            await self._pause(backoff)
             backoff = min(backoff * 2, self.max_backoff)
 
     async def _session(self) -> None:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(self.host, self.port), timeout=self.t3
         )
+        if self._stopping:  # stop() was called while we were connecting
+            writer.close()
+            return
         conn = HsmsConnection(
             reader,
             writer,
