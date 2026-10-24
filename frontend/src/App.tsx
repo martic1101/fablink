@@ -8,6 +8,8 @@ import { ToolDetail } from './components/ToolDetail'
 import { ToolPanel } from './components/ToolPanel'
 import { WorkOrderList } from './components/WorkOrderList'
 import { SystemMap } from './map/SystemMap'
+import { ReplayBar } from './replay/ReplayBar'
+import { DEMO, DEMO_WRITE_MESSAGE } from './transport'
 import { useFab } from './useFab'
 
 type Tab = 'lots' | 'secs'
@@ -93,14 +95,20 @@ export default function App() {
             </a>
           </nav>
         </div>
-        <div className="strategy-switch" role="radiogroup" aria-label="Maintenance strategy">
-          <button type="button" role="radio" aria-checked={predictive} onClick={() => setStrategy(true)}>
+        <div
+          className="strategy-switch"
+          role="radiogroup"
+          aria-label="Maintenance strategy"
+          title={DEMO ? DEMO_WRITE_MESSAGE : undefined}
+        >
+          <button type="button" role="radio" aria-checked={predictive} disabled={DEMO} onClick={() => setStrategy(true)}>
             Predictive maintenance
           </button>
-          <button type="button" role="radio" aria-checked={!predictive} onClick={() => setStrategy(false)}>
+          <button type="button" role="radio" aria-checked={!predictive} disabled={DEMO} onClick={() => setStrategy(false)}>
             Run to failure
           </button>
         </div>
+        {!DEMO && (
         <div className="runctl">
           <span className={`runctl__state ${running ? 'is-running' : 'is-paused'}`}>
             {running ? 'Running' : 'Paused'}
@@ -109,14 +117,18 @@ export default function App() {
             {running ? 'Pause simulation' : 'Start simulation'}
           </button>
         </div>
+        )}
         <div className={`link ${state.live ? 'is-live' : ''}`}>
           {state.live ? `${online} of ${tools.length} tools online` : 'Reconnecting to host'}
         </div>
-        <button type="button" className="quiet" disabled={!state.live} onClick={shutDown}>
-          Shut down
-        </button>
+        {!DEMO && (
+          <button type="button" className="quiet" disabled={!state.live} onClick={shutDown}>
+            Shut down
+          </button>
+        )}
       </header>
-      {state.live && !running && (
+      {DEMO && <ReplayBar />}
+      {!DEMO && state.live && !running && (
         <div className="pausebar" role="status">
           <span>
             Simulation paused: no simulated time passes and nothing is dispatched. Tools stay connected.
@@ -132,7 +144,13 @@ export default function App() {
           <SystemMap state={state} subscribe={subscribe} />
         ) : tools.length === 0 ? (
           <p className="empty">
-            Waiting for the FabLink host. Start it with <code>make demo</code> and this page connects on its own.
+            {DEMO ? (
+              'Loading the recorded demo…'
+            ) : (
+              <>
+                Waiting for the FabLink host. Start it with <code>make demo</code> and this page connects on its own.
+              </>
+            )}
           </p>
         ) : (
           <>

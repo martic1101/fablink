@@ -20,6 +20,12 @@ out of spec, so maintenance can be scheduled before it scraps wafers.
 >   GEM-compliant. See [SECS/GEM scope](#secsgem-scope) for exactly what is
 >   and isn't there.
 
+**Try it in your browser: [martic1101.github.io/fablink](https://martic1101.github.io/fablink/)**,
+a recorded demo with nothing to install. It is the real console replaying a
+recorded run, not a video: click any tool, open the System map and replay
+the scenarios. Controls that would change the system are turned off there;
+run it locally (below) for the live version.
+
 ![FabLink console](docs/screenshot.jpg)
 
 ```bash
@@ -149,6 +155,21 @@ commands), does the work at the tool, and the tool reports `MAINT_STARTED` /
 `MAINT_COMPLETED`, which closes the work order and releases the tool.
 
 More detail, including message sequences, is in [docs/architecture.md](docs/architecture.md).
+
+## The online demo
+
+GitHub Pages only serves static files, so the online version replays a
+recording instead of running the Python host. `make record-demo` (with
+`make demo` running) records about 90 seconds of a real run: every WebSocket
+message the console receives, the REST data it polls, and one run of each
+System map scenario with its start time. The frontend's demo build
+(`npm run build:demo`) swaps the network layer for a player
+([`frontend/src/replay`](frontend/src/replay)) that answers the same API calls
+"as of" the playback time and delivers the recorded messages on schedule, so
+every page is the real UI. Running a scenario there jumps to its recorded
+moment. The recording is about 0.3 MB gzip-compressed. The
+[Pages workflow](.github/workflows/pages.yml) builds and publishes it on
+every push to `main`.
 
 ## SECS/GEM scope
 

@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { api } from '../api'
+import { DEMO, DEMO_WRITE_MESSAGE } from '../transport'
 import type { Lot } from '../types'
 
 const ORDER: Record<string, number> = { HOLD: 0, RUNNING: 1, DISPATCHED: 2, QUEUED: 3, COMPLETED: 4 }
@@ -72,7 +73,7 @@ export function LotTable({ lots }: { lots: Lot[] }) {
                 <td className="num">{l.wafers_scrapped || ''}</td>
                 <td>
                   {l.status === 'HOLD' && (
-                    <button type="button" className="small" onClick={() => release(l.id)}>
+                    <button type="button" className="small" disabled={DEMO} onClick={() => release(l.id)}>
                       Release remaining wafers
                     </button>
                   )}
@@ -106,7 +107,7 @@ function NewLotForm({ onError }: { onError: (m: string | null) => void }) {
   }
 
   return (
-    <form className="newlot" onSubmit={submit}>
+    <form className="newlot" onSubmit={submit} title={DEMO ? DEMO_WRITE_MESSAGE : undefined}>
       <label>
         Process
         <select value={toolType} onChange={(e) => setToolType(e.target.value)}>
@@ -122,7 +123,7 @@ function NewLotForm({ onError }: { onError: (m: string | null) => void }) {
         <input type="checkbox" checked={hot} onChange={(e) => setHot(e.target.checked)} />
         Hot lot (dispatch first)
       </label>
-      <button type="submit" disabled={busy}>
+      <button type="submit" disabled={busy || DEMO}>
         Release lot to the line
       </button>
     </form>

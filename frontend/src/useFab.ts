@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react'
-import { api, wsUrl } from './api'
+import { api } from './api'
+import { transport } from './connection'
+import { DEMO } from './transport'
 import type {
   Activity,
   Alarm,
@@ -38,6 +40,7 @@ export interface FabState {
 
 type Action =
   | { type: 'live'; live: boolean }
+  | { type: 'reset' }
   | { type: 'shutDown' }
   | { type: 'equipment'; data: Equipment }
   | { type: 'lot'; data: Lot }
@@ -73,6 +76,8 @@ function reducer(s: FabState, a: Action): FabState {
   switch (a.type) {
     case 'live':
       return { ...s, live: a.live }
+    case 'reset':
+      return { ...initial, live: true, modes: s.modes }
     case 'shutDown':
       return { ...s, shutDown: true, live: false }
     case 'equipment':
@@ -152,7 +157,7 @@ export function useFab() {
   }, [])
 
   useEffect(() => {
-    let ws: WebSocket | null = null
+    let disconnect: (() => void) | null = null
     let retry: number | undefined
     let closed = false
 
@@ -175,64 +180,81 @@ export function useFab() {
       refreshKpi()
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const onMessage = (topic: string, data: any) => {
+      listeners.current.forEach((fn) => fn(topic, data))
+      switch (topic) {
+        case 'equipment':
+          dispatch({ type: 'equipment', data })
+          break
+        case 'lot':
+          dispatch({ type: 'lot', data })
+          break
+        case 'trace':
+          dispatch({ type: 'trace', tool: data.tool, point: { ts: data.ts, values: data.values } })
+          break
+        case 'wafer':
+          dispatch({ type: 'wafer', data })
+          break
+        case 'secs':
+          dispatch({ type: 'secs', data })
+          break
+        case 'alarm':
+          refreshAlarms()
+          break
+        case 'modes':
+          dispatch({ type: 'modes', data })
+          break
+        case 'maintenance':
+          refreshKpi()
+          break
+        case 'activity':
+          dispatch({ type: 'activity', data })
+          break
+        case 'work_order':
+          refreshWorkOrders()
+          break
+        case 'shutdown':
+          closed = true // don't try to reconnect to a host that was stopped on purpose
+          dispatch({ type: 'shutDown' })
+          break
+      }
+    }
+
     const connect = () => {
-      ws = new WebSocket(wsUrl())
-      ws.onopen = () => {
-        dispatch({ type: 'live', live: true })
-        loadSnapshot()
-      }
-      ws.onclose = () => {
-        dispatch({ type: 'live', live: false })
-        if (!closed) retry = window.setTimeout(connect, 1500)
-      }
-      ws.onmessage = (ev) => {
-        const { topic, data } = JSON.parse(ev.data)
-        listeners.current.forEach((fn) => fn(topic, data))
-        switch (topic) {
-          case 'equipment':
-            dispatch({ type: 'equipment', data })
-            break
-          case 'lot':
-            dispatch({ type: 'lot', data })
-            break
-          case 'trace':
-            dispatch({ type: 'trace', tool: data.tool, point: { ts: data.ts, values: data.values } })
-            break
-          case 'wafer':
-            dispatch({ type: 'wafer', data })
-            break
-          case 'secs':
-            dispatch({ type: 'secs', data })
-            break
-          case 'alarm':
-            refreshAlarms()
-            break
-          case 'modes':
-            dispatch({ type: 'modes', data })
-            break
-          case 'maintenance':
-            refreshKpi()
-            break
-          case 'activity':
-            dispatch({ type: 'activity', data })
-            break
-          case 'work_order':
-            refreshWorkOrders()
-            break
-          case 'shutdown':
-            closed = true // don't try to reconnect to a host that was stopped on purpose
-            dispatch({ type: 'shutDown' })
-            break
-        }
-      }
+      disconnect = transport.connect({
+        onOpen: () => {
+          dispatch({ type: 'live', live: true })
+          loadSnapshot()
+        },
+        onClose: () => {
+          dispatch({ type: 'live', live: false })
+          if (!closed) retry = window.setTimeout(connect, 1500)
+        },
+        onMessage,
+        onReset: () => {
+          // Replay jumped in time: start over from a snapshot at the new moment.
+          dispatch({ type: 'reset' })
+          loadSnapshot()
+        },
+      })
     }
     connect()
     const kpiTimer = window.setInterval(refreshKpi, 5000)
+    // The recording sampled these lists once a second, so a refresh right after an
+    // event can land on the previous sample; re-check them to stay in step.
+    const demoTimer = DEMO
+      ? window.setInterval(() => {
+          refreshAlarms()
+          refreshWorkOrders()
+        }, 1000)
+      : undefined
     return () => {
       closed = true
       window.clearTimeout(retry)
       window.clearInterval(kpiTimer)
-      ws?.close()
+      window.clearInterval(demoTimer)
+      disconnect?.()
     }
   }, [refreshAlarms, refreshKpi, refreshWorkOrders])
 

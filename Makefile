@@ -1,4 +1,4 @@
-.PHONY: setup dev demo test lint docker
+.PHONY: setup dev demo test lint docker record-demo demo-site
 
 VENV := backend/.venv
 PY := $(VENV)/bin/python
@@ -26,3 +26,9 @@ lint:
 
 docker:           ## full stack with PostgreSQL
 	docker compose up --build
+
+record-demo:      ## record a real run for the GitHub Pages demo (needs `make demo` running)
+	cd backend && .venv/bin/python -m tools.record_demo
+
+demo-site:        ## build the recorded demo into frontend/dist-demo
+	cd frontend && npm run build:demo

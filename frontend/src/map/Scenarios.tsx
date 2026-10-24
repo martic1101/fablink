@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { timeOf } from '../lib/health'
+import { getPlayer } from '../replay/player'
+import { DEMO } from '../transport'
 import type { Activity, Equipment, Modes, SimStatus } from '../types'
 import type { Listener } from '../useFab'
 import { BLOCK_LABEL } from './content'
@@ -18,7 +20,7 @@ interface Props {
   onHighlight: (h: Highlight | null) => void
 }
 
-export function Scenarios({ tools, tool, onToolChange, modes, sim, activity, subscribe, onHighlight }: Props) {
+export function Scenarios({ tools, tool: chosenTool, onToolChange, modes, sim, activity, subscribe, onHighlight }: Props) {
   const [scenarioId, setScenarioId] = useState('wafer')
   const [run, setRun] = useState<Run | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -26,9 +28,16 @@ export function Scenarios({ tools, tool, onToolChange, modes, sim, activity, sub
   const spoolSeen = useRef(false)
 
   const def = SCENARIOS.find((s) => s.id === (run?.scenarioId ?? scenarioId))!
+  // In the recorded demo each scenario happened on one tool at one moment.
+  const marker = DEMO ? getPlayer().markers.find((m) => m.scenario === def.id) : undefined
+  const tool = marker?.tool ?? chosenTool
   const equipment = tools.find((t) => t.id === tool)
-  const blocker = equipment ? def.blocker(equipment, modes, sim !== null) : 'Choose a tool.'
-  const hint = equipment && def.hint ? def.hint(equipment, modes) : null
+  let blocker = equipment ? def.blocker(equipment, modes, sim !== null) : 'Choose a tool.'
+  let hint = equipment && def.hint ? def.hint(equipment, modes) : null
+  if (DEMO) {
+    blocker = marker ? null : 'This scenario is not in the recording.'
+    hint = marker ? `Recorded on ${marker.tool}. Running it jumps the replay to that moment.` : null
+  }
   const running = run !== null && !isComplete(run)
 
   // Feed live activity into the running scenario.
@@ -64,6 +73,13 @@ export function Scenarios({ tools, tool, onToolChange, modes, sim, activity, sub
     spoolSeen.current = false
     // Start listening before triggering, so the simulator's own entry is caught.
     setRun(startRun(def, tool))
+    if (DEMO && marker) {
+      const player = getPlayer()
+      player.seek(marker.t - 0.3)
+      player.play()
+      setStarting(false)
+      return
+    }
     try {
       if (def.sim) await api.simAction(tool, def.sim.action, def.sim.body)
     } catch (e) {
@@ -97,6 +113,8 @@ export function Scenarios({ tools, tool, onToolChange, modes, sim, activity, sub
                 onChange={() => {
                   setScenarioId(s.id)
                   setRun(null)
+                  const m = DEMO ? getPlayer().markers.find((x) => x.scenario === s.id) : undefined
+                  if (m) onToolChange(m.tool)
                 }}
               />
               <span className="choice__title">{s.title}</span>
@@ -106,7 +124,7 @@ export function Scenarios({ tools, tool, onToolChange, modes, sim, activity, sub
         </fieldset>
 
         <div className="scenarios__run">
-          <fieldset className="tools-pick" disabled={running}>
+          <fieldset className="tools-pick" disabled={running || DEMO}>
             <legend>Tool</legend>
             {tools.map((t) => (
               <label key={t.id} className={tool === t.id ? 'is-on' : ''}>
@@ -125,7 +143,7 @@ export function Scenarios({ tools, tool, onToolChange, modes, sim, activity, sub
           </fieldset>
           <div className="scenarios__buttons">
             <button type="button" className="primary" disabled={!!blocker || running || starting} onClick={start}>
-              {running ? 'Running…' : `Run on ${tool}`}
+              {running ? 'Running…' : `${DEMO ? 'Replay' : 'Run'} on ${tool}`}
             </button>
             {run && (
               <button type="button" onClick={() => setRun(null)}>

@@ -13,31 +13,11 @@ import type {
   WorkOrder,
 } from './types'
 
-export class ApiError extends Error {
-  status: number
-  constructor(status: number, message: string) {
-    super(message)
-    this.status = status
-  }
-}
+import { transport } from './connection'
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  })
-  if (!res.ok) {
-    let detail = res.statusText
-    try {
-      const body = await res.json()
-      detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
-    } catch {
-      /* body was not JSON */
-    }
-    throw new ApiError(res.status, detail)
-  }
-  return res.json() as Promise<T>
-}
+export { ApiError } from './transport'
+
+const request = <T,>(path: string, init?: RequestInit) => transport.request<T>(path, init)
 
 export const api = {
   equipment: () => request<Equipment[]>('/equipment'),
@@ -66,9 +46,4 @@ export const api = {
   simTools: () => request<SimStatus[]>('/sim/tools'),
   simAction: (id: string, action: 'wear' | 'degrade' | 'disconnect' | 'lose_reply', body: Record<string, number>) =>
     request<SimStatus>(`/sim/tools/${id}/${action}`, { method: 'POST', body: JSON.stringify(body) }),
-}
-
-export function wsUrl(): string {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${location.host}/api/ws`
 }

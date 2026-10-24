@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from '../api'
 import { woSummary } from '../lib/workOrders'
+import { DEMO, DEMO_WRITE_MESSAGE } from '../transport'
 import type { Equipment, TracePoint } from '../types'
 import { HealthChart } from './HealthChart'
 import { Sparkline } from './Sparkline'
@@ -27,9 +28,9 @@ export function ToolDetail({ tool, trace }: { tool: Equipment; trace: TracePoint
   }
 
   const can = {
-    pm: !wo && tool.state !== 'DOWN',
-    send: wo?.status === 'OPEN',
-    abort: tool.connected && tool.state === 'PROCESSING' && tool.control_state === 'ONLINE_REMOTE',
+    pm: !DEMO && !wo && tool.state !== 'DOWN',
+    send: !DEMO && wo?.status === 'OPEN',
+    abort: !DEMO && tool.connected && tool.state === 'PROCESSING' && tool.control_state === 'ONLINE_REMOTE',
   }
 
   return (
@@ -55,7 +56,7 @@ export function ToolDetail({ tool, trace }: { tool: Equipment; trace: TracePoint
             </p>
           )}
         </div>
-        <div className="detail__actions">
+        <div className="detail__actions" title={DEMO ? DEMO_WRITE_MESSAGE : undefined}>
           <button
             type="button"
             disabled={!can.pm || pending !== null}

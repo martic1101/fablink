@@ -843,3 +843,77 @@ button.quiet {
     padding-right: 16px;
   }
 }
+
+/* ---- recorded demo (GitHub Pages build) ---------------------------------------------------- */
+.replaybar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1.5rem;
+  padding: 0.6rem 1.5rem;
+  background: var(--safelight-wash);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--t-sm);
+}
+
+.replaybar--error {
+  background: var(--surface);
+  color: var(--down);
+}
+
+.replaybar__note {
+  margin: 0;
+  max-width: 70ch;
+}
+
+.replaybar a {
+  color: inherit;
+  font-weight: 600;
+}
+
+.replaybar__controls {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex: 1 1 340px;
+  max-width: 560px;
+}
+
+.replaybar__controls input[type='range'] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--ink);
+}
+
+.replaybar__time {
+  white-space: nowrap;
+}
+
+.replaybar__rate {
+  display: inline-flex;
+}
+
+.replaybar__rate button {
+  border-radius: 0 !important;
+  margin-left: -1px;
+  padding: 0.25rem 0.55rem !important;
+}
+
+.replaybar__rate button[aria-checked='true'] {
+  background: var(--ink) !important;
+  color: var(--surface);
+}
+
+@media (max-width: 600px) {
+  .replaybar {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .replaybar__controls {
+    flex-basis: 100%;
+    min-width: 0;
+    gap: 0.4rem;
+  }
+}

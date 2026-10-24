@@ -8,7 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:demo": "tsc -b && vite build --mode demo",
+    "dev:demo": "vite --mode demo --port 5174"
   },
   "dependencies": {
     "react": "^19.1.0",
