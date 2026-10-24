@@ -40,12 +40,25 @@ export default function App() {
   const [runBusy, setRunBusy] = useState(false)
   // Only a local run can be shut down from here; the cloud deployment can't.
   const [canShutDown, setCanShutDown] = useState(false)
+  // While not connected, ask the API why, so a misconfigured deployment says so.
+  const [hostProblem, setHostProblem] = useState<string | null>(null)
   useEffect(() => {
-    if (DEMO || !state.live) return
-    api
-      .status()
-      .then((s) => setCanShutDown(Boolean(s.capabilities?.shutdown)))
-      .catch(() => setCanShutDown(false))
+    if (DEMO) return
+    const check = () =>
+      api
+        .status()
+        .then((s) => {
+          setCanShutDown(Boolean(s.capabilities?.shutdown))
+          setHostProblem(null)
+        })
+        .catch((e: Error) => {
+          setCanShutDown(false)
+          setHostProblem(e.message)
+        })
+    check()
+    if (state.live) return
+    const timer = window.setInterval(check, 5000)
+    return () => window.clearInterval(timer)
   }, [state.live])
 
   const setRunning = async (value: boolean) => {
@@ -119,8 +132,8 @@ export default function App() {
         </div>
         {!DEMO && (
         <div className="runctl">
-          <span className={`runctl__state ${running ? 'is-running' : 'is-paused'}`}>
-            {running ? 'Running' : 'Paused'}
+          <span className={`runctl__state ${state.live && running ? 'is-running' : 'is-paused'}`}>
+            {!state.live ? 'Not connected' : running ? 'Running' : 'Paused'}
           </span>
           <button type="button" disabled={!state.live || runBusy} onClick={() => setRunning(!running)}>
             {running ? 'Pause simulation' : 'Start simulation'}
@@ -157,7 +170,14 @@ export default function App() {
               'Loading the recorded demo…'
             ) : (
               <>
-                Waiting for the FabLink host. Start it with <code>make demo</code> and this page connects on its own.
+                Waiting for the FabLink host. Locally, start it with <code>make demo</code>; this page connects on
+                its own.
+                {hostProblem && (
+                  <>
+                    <br />
+                    The API says: {hostProblem}
+                  </>
+                )}
               </>
             )}
           </p>
