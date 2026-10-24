@@ -3,6 +3,23 @@ name = "fablink"
 version = "1.0.0"
 description = "Equipment automation (SECS/GEM) and predictive maintenance platform"
 requires-python = ">=3.9"
+# Kept in step with requirements.txt; Vercel installs from this file.
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",
+    "greenlet>=3.0",
+    "pydantic>=2.6",
+    "httpx>=0.27",
+    "asyncpg>=0.29",
+    "redis>=5.0",
+]
+
+# The Vercel service "api" runs the stateless cloud app, not app/main.py (which
+# runs the whole fab in-process for `make demo`).
+[tool.vercel]
+entrypoint = "app.vercel_api:app"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

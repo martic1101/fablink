@@ -93,6 +93,7 @@ class FabHost:
         self._activity_seq = 0
         # Operator-controllable modes
         self.running = True  # False = simulation paused: nothing is dispatched or sent
+        self.paused_by: Optional[str] = None  # "operator" | "idle" while paused
         self.predictive = True
         self.auto_dispatch = True
         self.auto_work_orders = True  # hand work orders to technicians without an engineer clicking
@@ -153,6 +154,7 @@ class FabHost:
             # Adopt the simulator's clock state, e.g. after a host restart while paused.
             try:
                 self.running = not await self.simulator.is_paused()
+                self.paused_by = None if self.running else "operator"
             except Exception:
                 pass
         for link in self.links.values():
@@ -763,11 +765,15 @@ class FabHost:
         self.bus.publish("maintenance", {"tool": link.tool_id, "kind": kind})
 
     # ---- simulation control (demo) --------------------------------------------------------------
-    async def set_running(self, running: bool) -> None:
+    async def set_running(self, running: bool, by_operator: bool = False, why: str = "") -> None:
         """Pause or start the simulation: the simulator's clock freezes and the
-        dispatcher stops sending lots and work orders. HSMS links stay up."""
+        dispatcher stops sending lots and work orders. HSMS links stay up.
+
+        ``paused_by`` remembers who paused it: an operator's pause sticks, while a
+        pause because nobody is watching (cloud daemon) lifts when someone comes back."""
         self.running = running
-        note = ""
+        self.paused_by = None if running else ("operator" if by_operator else "idle")
+        note = f" {why}" if why else ""
         if self.simulator:
             try:
                 await (self.simulator.resume() if running else self.simulator.pause())
@@ -930,6 +936,26 @@ class FabHost:
             },
         }
 
+    def frame_view(self, link: EquipmentLink) -> Optional[Dict[str, Any]]:
+        """The latest S6F1 trace message as bytes on the wire, decoded SECS-II and
+        named values: the three steps of reading data from a tool."""
+        if link.last_frame is None:
+            return None
+        ts, msg = link.last_frame
+        values = [item.scalar for item in msg.body[3].value]
+        return {
+            "ts": ts,
+            "hex": msg.pack().hex(),
+            "sml": msg.to_sml(),
+            "sensors": [
+                {"svid": svid, "name": name, "units": units, "value": val}
+                for (svid, name, units), val in zip(link.sensors, values)
+            ],
+        }
+
+    def trace_view(self, link: EquipmentLink, limit: int = 240) -> List[Dict[str, Any]]:
+        return [{"ts": ts, "values": vals} for ts, vals in list(link.trace)[-limit:]]
+
     def publish_equipment(self, link: EquipmentLink) -> None:
         self.bus.publish("equipment", self.equipment_view(link))
 
@@ -958,6 +984,7 @@ class FabHost:
     def modes(self) -> Dict[str, bool]:
         return {
             "running": self.running,
+            "paused_by": self.paused_by,
             "predictive": self.predictive,
             "auto_dispatch": self.auto_dispatch,
             "auto_work_orders": self.auto_work_orders,

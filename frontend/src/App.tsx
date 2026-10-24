@@ -38,6 +38,15 @@ export default function App() {
   const predictive = state.modes?.predictive ?? true
   const running = state.modes?.running ?? true
   const [runBusy, setRunBusy] = useState(false)
+  // Only a local run can be shut down from here; the cloud deployment can't.
+  const [canShutDown, setCanShutDown] = useState(false)
+  useEffect(() => {
+    if (DEMO || !state.live) return
+    api
+      .status()
+      .then((s) => setCanShutDown(Boolean(s.capabilities?.shutdown)))
+      .catch(() => setCanShutDown(false))
+  }, [state.live])
 
   const setRunning = async (value: boolean) => {
     setRunBusy(true)
@@ -121,7 +130,7 @@ export default function App() {
         <div className={`link ${state.live ? 'is-live' : ''}`}>
           {state.live ? `${online} of ${tools.length} tools online` : 'Reconnecting to host'}
         </div>
-        {!DEMO && (
+        {canShutDown && (
           <button type="button" className="quiet" disabled={!state.live} onClick={shutDown}>
             Shut down
           </button>

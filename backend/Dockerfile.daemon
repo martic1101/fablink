@@ -1,0 +1,11 @@
+# The fab daemon: simulator, technicians and EAP host in one long-running process.
+# Built by Vercel for the daemon "fab" (see vercel.json) and by Docker Compose
+# for the "split" profile.
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app ./app
+COPY simulator ./simulator
+ENV PYTHONUNBUFFERED=1
+CMD ["python", "-m", "app.daemon"]

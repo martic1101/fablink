@@ -220,7 +220,36 @@ after a grace period.
 the host mid-production and checks that no dispatcher, link or
 connection-close task is left behind.
 
-## 12. Smaller ones
+## 12. Design change: splitting the fab for Vercel
+
+**Problem.** The host keeps four HSMS sessions, a dispatcher and an in-memory
+health model running for hours. A Vercel function is a request handler that
+lives at most 300 s, may run as many copies as there is traffic, and may be
+frozen between requests. Moving `app/main.py` there as-is would have started a
+new fab per instance and lost it after five minutes.
+
+**Change.** The fab moved into a Vercel *daemon* (one long-running container)
+and the API became stateless. The first step was to find everything the routes
+took from the host directly and put it behind `Fab`; the command logic moved
+out of the routes into `commands.py`, so the daemon runs exactly the code the
+local app runs. Live state then had to reach API instances the daemon can't
+call (daemons take no inbound traffic): it goes through Redis as batched
+events and periodic snapshots, and commands go the other way over pub/sub.
+
+**Cost.** A free Upstash plan allows 500K commands a month. One PUBLISH per
+event would be about 100 a second; batching every 0.5 s and snapshotting every
+3 s brings a running fab to about 3 commands a second. That is still about
+50 hours of running a month, so the fab pauses when no console is open, which
+brings an idle one to zero. The daemon's CPU quota on the
+Hobby plan is the same argument. The operator's pause and the idle pause are
+kept apart (`paused_by`), or a visitor opening the page would undo an
+operator's decision.
+
+**Tests.** `test_split.py` runs the real daemon and the real cloud API in one
+event loop over an in-memory Redis (`fakeredis`); CI's `e2e-split` job runs
+the same topology in containers on PostgreSQL and real Redis.
+
+## 13. Smaller ones
 
 - **Timestamps.** SQLite returns naive datetimes even for timezone-aware
   columns, so the browser showed UTC times as local time. All API timestamps

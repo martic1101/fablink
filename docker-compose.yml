@@ -26,3 +26,38 @@ services:
         condition: service_healthy
       simulator:
         condition: service_started
+
+  # ---- "split" profile: the cloud (Vercel) topology, runnable locally and in CI.
+  #   docker compose --profile split up --build fab api-cloud
+  # The fab daemon runs simulator + host; the stateless API talks to it via Redis.
+  redis:
+    image: redis:7-alpine
+    profiles: ["split"]
+
+  fab:
+    build:
+      context: backend
+      dockerfile: Dockerfile.daemon
+    profiles: ["split"]
+    environment:
+      # A provider-style URL on purpose: the app converts it for asyncpg.
+      DATABASE_URL: postgres://fab:fab@db:5432/fab
+      REDIS_URL: redis://redis:6379
+      SIM_SPEED: "3"
+      IDLE_PAUSE_SECONDS: ${IDLE_PAUSE_SECONDS:-60}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  api-cloud:
+    build: .
+    profiles: ["split"]
+    command: ["uvicorn", "app.vercel_api:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["8001:8000"]
+    environment:
+      DATABASE_URL: postgres://fab:fab@db:5432/fab
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - fab

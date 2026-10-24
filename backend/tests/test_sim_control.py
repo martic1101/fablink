@@ -2,9 +2,9 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api import sim_proxy
 from app.config import Settings
 from app.main import create_app
+from app.simulation import SimulatorControl
 from simulator.control import create_control_app
 from simulator.tool import SimTool, default_fleet
 
@@ -73,31 +73,31 @@ def test_proxy_reports_unreachable_simulator(tmp_path):
         assert r.status_code == 503 and "not reachable" in r.json()["detail"]
 
 
-def test_proxy_forwards_and_records_activity(tmp_path, tools, monkeypatch):
+def test_proxy_forwards_and_records_activity(tmp_path, tools):
     control = create_control_app(tools)
-    real_client = httpx.AsyncClient
-    monkeypatch.setattr(
-        sim_proxy.httpx,
-        "AsyncClient",
-        lambda **kw: real_client(transport=httpx.ASGITransport(app=control), **kw),
-    )
     with TestClient(_app(tmp_path, "http://sim")) as c:
+        # Point the host at an in-process simulator control API.
+        c.app.state.host.simulator = SimulatorControl(
+            "http://sim", transport=httpx.ASGITransport(app=control)
+        )
         assert c.post("/api/sim/tools/ETCH01/wear", json={"wear": 0.995}).json()["wear"] == 0.995
         assert c.post("/api/sim/tools/ETCH01/explode", json={}).status_code == 404
+        assert [t["id"] for t in c.get("/api/sim/tools").json()] == ["ETCH01"]
         [entry] = c.get("/api/activity?block=simulator").json()
         assert entry["kind"] == "sim.wear" and "99.5%" in entry["text"]
 
 
-def test_proxy_logs_action_before_its_effects(tmp_path, monkeypatch):
+def test_proxy_logs_action_before_its_effects(tmp_path):
     """Regression: cutting the link makes the gateway log link.down before the
     simulator's HTTP reply returns. The scenario action must still come first."""
-
-    async def fake_call(request, method, path, json=None):
-        request.app.state.host.activity("gateway", "ETCH01", "link.down", "session closed")
-        return {}
-
-    monkeypatch.setattr(sim_proxy, "_call", fake_call)
     with TestClient(_app(tmp_path, "http://sim")) as c:
+        host = c.app.state.host
+
+        async def fake_action(tool, action, body):
+            host.activity("gateway", "ETCH01", "link.down", "session closed")
+            return {}
+
+        host.simulator.action = fake_action
         c.post("/api/sim/tools/ETCH01/disconnect", json={"seconds": 5})
         seen = [e["kind"] for e in c.get("/api/activity?tool=ETCH01").json()]
         assert [k for k in seen if k in ("sim.disconnect", "link.down")] == ["sim.disconnect", "link.down"]

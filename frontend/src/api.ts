@@ -38,6 +38,7 @@ export const api = {
   alarms: () => request<Alarm[]>('/alarms?limit=40'),
   secsLog: () => request<SecsEntry[]>('/secs-log?limit=120'),
   kpi: () => request<Kpi>('/kpi'),
+  status: () => request<{ capabilities?: { shutdown?: boolean } }>('/status'),
   shutdown: () => request<{ ok: boolean }>('/system/shutdown', { method: 'POST' }),
   setModes: (m: Partial<Modes>) => request<Modes>('/modes', { method: 'PUT', body: JSON.stringify(m) }),
   activity: () => request<Activity[]>('/activity?limit=300'),

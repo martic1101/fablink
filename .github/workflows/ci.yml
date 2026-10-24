@@ -61,3 +61,30 @@ jobs:
           exit 1
       - if: always()
         run: docker compose down -v
+
+  # The cloud (Vercel) topology: fab daemon + stateless API linked by Redis, on PostgreSQL.
+  e2e-split:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    env:
+      IDLE_PAUSE_SECONDS: "0" # keep the fab running without a browser attached
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose --profile split up -d --build fab api-cloud
+      - name: Wait for the cloud API to report 4 tools and a completed lot
+        run: |
+          for i in $(seq 1 60); do
+            online=$(curl -sf localhost:8001/api/status | jq -r .equipment_online || echo 0)
+            done_lots=$(curl -sf "localhost:8001/api/lots?status=COMPLETED" | jq length || echo 0)
+            echo "online=$online completed=$done_lots"
+            if [ "$online" = "4" ] && [ "$done_lots" -gt 0 ]; then exit 0; fi
+            sleep 5
+          done
+          docker compose --profile split logs fab api-cloud
+          exit 1
+      - name: A console command travels through Redis to the daemon and back
+        run: |
+          curl -sf -X PUT localhost:8001/api/modes -H 'content-type: application/json' \
+            -d '{"predictive": false}' | jq -e '.predictive == false'
+      - if: always()
+        run: docker compose --profile split down -v

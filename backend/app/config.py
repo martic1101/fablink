@@ -59,6 +59,14 @@ class Settings:
     # Demo behaviour: keep this many lots queued so the fab never runs dry.
     wip_target: int = int(os.getenv("WIP_TARGET", "6"))
     start_background: bool = os.getenv("START_BACKGROUND", "1") == "1"
+    # ---- cloud (Vercel) split deployment --------------------------------------------------------
+    # Redis link between the stateless API and the fab daemon (Upstash sets one of these).
+    redis_url: str = field(default_factory=lambda: os.getenv("REDIS_URL") or os.getenv("KV_URL") or "")
+    # Fab daemon: simulation speed, pause after this many seconds without a console
+    # (0 = never pause), and how often to write live snapshots to Redis.
+    sim_speed: float = float(os.getenv("SIM_SPEED", "2"))
+    idle_pause_seconds: float = float(os.getenv("IDLE_PAUSE_SECONDS", "60"))
+    snapshot_every: float = float(os.getenv("SNAPSHOT_EVERY", "3"))
     # Allow the console's "Shut down" button (stops the simulator and this process).
     allow_shutdown: bool = os.getenv("ALLOW_SHUTDOWN", "1") == "1"
     # Simulator control API (demo only): scenario controls proxied under

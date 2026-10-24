@@ -1,32 +1,43 @@
+"""The console's REST + WebSocket API.
+
+Routes only talk to the ``Fab`` interface (app/fab.py), so the same API is
+served by a single process with the fab inside it, or by the stateless cloud
+API with the fab in a separate daemon.
+"""
+
 from __future__ import annotations
 
 import asyncio
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from ..analytics import kpi
+from ..commands import CommandError
 from ..config import RECIPES
-from ..equipment.gateway import EquipmentLink
-from ..host import OK_ACKS, FabHost
+from ..fab import Fab, LocalFab
+from ..host import FabHost
 from ..models import Alarm, EventLog, Lot, Maintenance, StateHistory, WaferResult, iso
-from ..secs.hsms import T3Timeout
 
 router = APIRouter(prefix="/api")
 TRACE_SF = ("S6F1", "S6F2")
 
 
-def get_host(request: Request) -> FabHost:
-    return request.app.state.host
+def get_fab(request: Request) -> Fab:
+    fab = request.app.state.fab
+    if fab is None:
+        raise HTTPException(503, "REDIS_URL (or KV_URL) is not set, so the API can't reach the fab daemon.")
+    return fab
 
 
-def get_link(host: FabHost, tool_id: str) -> EquipmentLink:
-    link = host.links.get(tool_id)
-    if link is None:
-        raise HTTPException(404, f"unknown equipment {tool_id}")
-    return link
+async def run(fab: Fab, name: str, **args: Any) -> Any:
+    """Run a fab command and turn its failure into the matching HTTP error."""
+    try:
+        return await fab.command(name, **args)
+    except CommandError as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
 
 
 # ---- request bodies ---------------------------------------------------------------------------
@@ -58,56 +69,43 @@ class ModesIn(BaseModel):
 # ---- equipment ------------------------------------------------------------------------------
 @router.get("/status")
 async def status(request: Request):
-    host = get_host(request)
+    fab = get_fab(request)
+    st = await fab.status()
     return {
         "ok": True,
-        "equipment_online": sum(1 for l in host.links.values() if l.connected),
-        "equipment_total": len(host.links),
-        "ws_clients": host.bus.subscriber_count,
+        "equipment_online": st["equipment_online"],
+        "equipment_total": st["equipment_total"],
+        "ws_clients": st["ws_clients"],
+        "capabilities": fab.capabilities,
     }
 
 
 @router.get("/equipment")
 async def list_equipment(request: Request):
-    host = get_host(request)
-    return [host.equipment_view(l) for l in host.links.values()]
+    return await get_fab(request).equipment()
 
 
 @router.get("/equipment/{tool_id}")
 async def equipment_detail(tool_id: str, request: Request):
-    host = get_host(request)
-    link = get_link(host, tool_id)
-    view = host.equipment_view(link)
-    view["trace"] = [{"ts": ts, "values": vals} for ts, vals in link.trace]
+    view = await get_fab(request).equipment_detail(tool_id)
+    if view is None:
+        raise HTTPException(404, f"unknown equipment {tool_id}")
     return view
 
 
 @router.get("/equipment/{tool_id}/frame")
 async def equipment_frame(tool_id: str, request: Request):
     """The latest S6F1 trace message, as bytes on the wire, decoded SECS-II and
-    named values — the three steps of reading data from a tool."""
-    host = get_host(request)
-    link = get_link(host, tool_id)
-    if link.last_frame is None:
+    named values: the three steps of reading data from a tool."""
+    frame = await get_fab(request).frame(tool_id)
+    if frame is None:
         raise HTTPException(404, "no trace data received from this tool yet")
-    ts, msg = link.last_frame
-    values = [item.scalar for item in msg.body[3].value]
-    return {
-        "ts": ts,
-        "hex": msg.pack().hex(),
-        "sml": msg.to_sml(),
-        "sensors": [
-            {"svid": svid, "name": name, "units": units, "value": val}
-            for (svid, name, units), val in zip(link.sensors, values)
-        ],
-    }
+    return frame
 
 
 @router.get("/equipment/{tool_id}/wafers")
 async def equipment_wafers(tool_id: str, request: Request, limit: int = Query(100, le=1000)):
-    host = get_host(request)
-    get_link(host, tool_id)
-    async with host.session() as s:
+    async with get_fab(request).session() as s:
         rows = (
             await s.execute(
                 select(WaferResult)
@@ -131,47 +129,25 @@ async def equipment_wafers(tool_id: str, request: Request, limit: int = Query(10
 
 @router.post("/equipment/{tool_id}/commands")
 async def equipment_command(tool_id: str, body: CommandIn, request: Request):
-    host = get_host(request)
-    link = get_link(host, tool_id)
-    try:
-        ack = await host.abort(link)
-    except T3Timeout as exc:
-        raise HTTPException(504, str(exc)) from exc
-    except ConnectionError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    if ack not in OK_ACKS:
-        raise HTTPException(409, f"equipment rejected {body.command}: HCACK={ack.name}")
-    return {"hcack": ack.name}
+    return await run(get_fab(request), "abort", tool=tool_id)
 
 
 # ---- maintenance work orders ---------------------------------------------------------------------
 @router.post("/equipment/{tool_id}/work-orders", status_code=201)
 async def request_work_order(tool_id: str, body: WorkOrderIn, request: Request):
-    host = get_host(request)
-    link = get_link(host, tool_id)
-    try:
-        return await host.request_work_order(link, body.kind)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
+    return await run(get_fab(request), "request_work_order", tool=tool_id, kind=body.kind)
 
 
 @router.get("/work-orders")
 async def list_work_orders(request: Request, limit: int = Query(30, le=200)):
-    host = get_host(request)
-    async with host.session() as s:
+    async with get_fab(request).session() as s:
         rows = (await s.execute(select(Maintenance).order_by(Maintenance.id.desc()).limit(limit))).scalars()
-        return [host.work_order_view(m) for m in rows]
+        return [FabHost.work_order_view(m) for m in rows]
 
 
 @router.post("/work-orders/{wo_id}/send")
 async def send_work_order(wo_id: int, request: Request):
-    host = get_host(request)
-    link = next((l for l in host.links.values() if l.work_order and l.work_order["id"] == wo_id), None)
-    if link is None:
-        raise HTTPException(404, "no active work order with that id")
-    if not await host.send_work_order(link):
-        raise HTTPException(409, "work order is not open, or the technicians could not be reached")
-    return link.work_order
+    return await run(get_fab(request), "send_work_order", wo_id=wo_id)
 
 
 # ---- lots ---------------------------------------------------------------------------------------
@@ -179,40 +155,28 @@ async def send_work_order(wo_id: int, request: Request):
 async def list_lots(
     request: Request, status: Optional[List[str]] = Query(None), limit: int = Query(100, le=500)
 ):
-    host = get_host(request)
-    async with host.session() as s:
+    async with get_fab(request).session() as s:
         q = select(Lot).order_by(Lot.created_at.desc()).limit(limit)
         if status:
             q = q.where(Lot.status.in_(status))
-        return [host.lot_view(l) for l in (await s.execute(q)).scalars()]
+        return [FabHost.lot_view(l) for l in (await s.execute(q)).scalars()]
 
 
 @router.post("/lots", status_code=201)
 async def create_lot(body: LotIn, request: Request):
-    host = get_host(request)
-    async with host.session() as s:
-        try:
-            lot = await host.lots.create(s, body.tool_type, body.wafers, body.recipe, priority=body.priority)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        await s.flush()
-        host.publish_lot(lot)
-        return host.lot_view(lot)
+    return await run(
+        get_fab(request),
+        "create_lot",
+        tool_type=body.tool_type,
+        wafers=body.wafers,
+        recipe=body.recipe,
+        priority=body.priority,
+    )
 
 
 @router.post("/lots/{lot_id}/release")
 async def release_lot(lot_id: str, request: Request):
-    host = get_host(request)
-    async with host.session() as s:
-        lot = await s.get(Lot, lot_id)
-        if lot is None:
-            raise HTTPException(404, "lot not found")
-        try:
-            await host.lots.release(s, lot)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
-        host.publish_lot(lot)
-        return host.lot_view(lot)
+    return await run(get_fab(request), "release_lot", lot_id=lot_id)
 
 
 @router.get("/recipes")
@@ -223,8 +187,7 @@ async def recipes():
 # ---- alarms / events / logs ------------------------------------------------------------------
 @router.get("/alarms")
 async def list_alarms(request: Request, active: bool = False, limit: int = Query(100, le=500)):
-    host = get_host(request)
-    async with host.session() as s:
+    async with get_fab(request).session() as s:
         q = select(Alarm).order_by(Alarm.id.desc()).limit(limit)
         if active:
             q = q.where(Alarm.cleared_at.is_(None))
@@ -244,8 +207,7 @@ async def list_alarms(request: Request, active: bool = False, limit: int = Query
 
 @router.get("/events")
 async def list_events(request: Request, tool: Optional[str] = None, limit: int = Query(100, le=1000)):
-    host = get_host(request)
-    async with host.session() as s:
+    async with get_fab(request).session() as s:
         q = select(EventLog).order_by(EventLog.id.desc()).limit(limit)
         if tool:
             q = q.where(EventLog.equipment_id == tool)
@@ -259,10 +221,9 @@ async def list_events(request: Request, tool: Optional[str] = None, limit: int =
 async def secs_log(
     request: Request, tool: Optional[str] = None, include_trace: bool = False, limit: int = 100
 ):
-    host = get_host(request)
     rows = [
         e
-        for e in host.secs_log
+        for e in await get_fab(request).secs_log()
         if (tool is None or e["tool"] == tool) and (include_trace or e["sf"] not in TRACE_SF)
     ]
     return rows[-limit:]
@@ -272,10 +233,9 @@ async def secs_log(
 async def activity(
     request: Request, tool: Optional[str] = None, block: Optional[str] = None, limit: int = Query(200, le=600)
 ):
-    host = get_host(request)
     rows = [
         e
-        for e in host.activity_log
+        for e in await get_fab(request).activity()
         if (tool is None or e["tool"] == tool) and (block is None or e["block"] == block)
     ]
     return rows[-limit:]
@@ -284,9 +244,9 @@ async def activity(
 @router.get("/system")
 async def system(request: Request):
     """Row counts per table and live connection numbers for the System map."""
-    host = get_host(request)
-    async with host.session() as s:
-        tables = {}
+    fab = get_fab(request)
+    tables: Dict[str, int] = {}
+    async with fab.session() as s:
         for name, model in (
             ("lots", Lot),
             ("wafer_results", WaferResult),
@@ -295,20 +255,20 @@ async def system(request: Request):
             ("state_history", StateHistory),
             ("event_log", EventLog),
         ):
-            tables[name] = await s.scalar(select(func.count()).select_from(model))
+            tables[name] = await s.scalar(select(func.count()).select_from(model)) or 0
+    st = await fab.status()
     return {
         "tables": tables,
-        "ws_clients": host.bus.subscriber_count,
-        "equipment_online": sum(1 for l in host.links.values() if l.connected),
-        "secs_messages_logged": len(host.secs_log),
+        "ws_clients": st["ws_clients"],
+        "equipment_online": st["equipment_online"],
+        "secs_messages_logged": st["secs_messages_logged"],
     }
 
 
 # ---- KPIs and modes -------------------------------------------------------------------------
 @router.get("/kpi")
 async def get_kpi(request: Request):
-    host = get_host(request)
-    async with host.session() as s:
+    async with get_fab(request).session() as s:
         return {
             "availability": await kpi.availability(s),
             "strategies": await kpi.strategy_comparison(s),
@@ -317,28 +277,34 @@ async def get_kpi(request: Request):
 
 @router.get("/modes")
 async def get_modes(request: Request):
-    return get_host(request).modes()
+    return await get_fab(request).modes()
 
 
 @router.put("/modes")
 async def set_modes(body: ModesIn, request: Request):
-    host = get_host(request)
-    changes = body.model_dump(exclude_none=True)
-    running = changes.pop("running", None)
-    for key, value in changes.items():
-        setattr(host, key, value)
-    if running is not None and running != host.running:
-        await host.set_running(running)
-    host.bus.publish("modes", host.modes())
-    return host.modes()
+    return await run(get_fab(request), "set_modes", **body.model_dump(exclude_none=True))
+
+
+# ---- simulator (demo only) --------------------------------------------------------------------
+@router.get("/sim/tools")
+async def sim_tools(request: Request):
+    """The simulator's ground truth (wear, spool), shown next to what the host inferred."""
+    return await run(get_fab(request), "sim_tools")
+
+
+@router.post("/sim/tools/{tool_id}/{action}")
+async def sim_action(tool_id: str, action: str, request: Request, body: Optional[Dict[str, Any]] = None):
+    """Scenario controls. Real equipment has no such back door."""
+    return await run(get_fab(request), "sim", tool=tool_id, action=action, body=body or {})
 
 
 @router.post("/system/shutdown")
 async def shutdown(request: Request):
-    """Stop the simulator and this host (the console's "Shut down" button)."""
-    host = get_host(request)
-    if not host.settings.allow_shutdown:
-        raise HTTPException(403, "Shutting down from the console is disabled (ALLOW_SHUTDOWN=0).")
+    """Stop the simulator and this host (the console's "Shut down" button, local only)."""
+    fab = get_fab(request)
+    if not fab.capabilities.get("shutdown") or not isinstance(fab, LocalFab):
+        raise HTTPException(403, "Shutting down from the console is disabled here.")
+    host = fab.host
     host.activity("api", None, "system.shutdown", "Shutdown requested from the console.")
     host.bus.publish("shutdown", {})
     if host.simulator:
@@ -353,17 +319,16 @@ async def shutdown(request: Request):
 # ---- WebSocket ----------------------------------------------------------------------------------
 @router.websocket("/ws")
 async def ws(websocket: WebSocket):
-    host: FabHost = websocket.app.state.host
+    fab: Optional[Fab] = websocket.app.state.fab
+    if fab is None:
+        await websocket.close(code=1011)  # same cause as get_fab's 503
+        return
     await websocket.accept()
-    q = host.bus.subscribe()
+    stream = fab.stream()
     try:
-        await websocket.send_json({"topic": "modes", "data": host.modes()})
-        for link in host.links.values():
-            await websocket.send_json({"topic": "equipment", "data": host.equipment_view(link)})
-        while True:
-            msg = await q.get()
+        async for msg in stream:
             await websocket.send_json(msg)
-    except (WebSocketDisconnect, asyncio.CancelledError, RuntimeError):
+    except (WebSocketDisconnect, asyncio.CancelledError, RuntimeError, ConnectionError):
         pass
     finally:
-        host.bus.unsubscribe(q)
+        await stream.aclose()

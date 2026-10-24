@@ -15,10 +15,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .api.routes import router
-from .api.sim_proxy import router as sim_router
 from .bus import EventBus
 from .config import Settings
 from .db import create_schema, make_engine, make_sessionmaker
+from .fab import LocalFab
 from .host import FabHost
 from .maintenance import CrewHttpSink
 from .simulation import SimulatorControl
@@ -44,6 +44,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             simulator=SimulatorControl(settings.sim_control_url),
         )
         app.state.host = host
+        app.state.fab = LocalFab(host)
         await host.start()
         try:
             yield
@@ -62,7 +63,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"], allow_headers=["*"]
     )
     app.include_router(router)
-    app.include_router(sim_router)
     if FRONTEND_DIST.exists():  # production build served by the same process
         app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
     return app

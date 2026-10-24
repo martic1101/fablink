@@ -12,7 +12,11 @@
 | `app/maintenance.py` | Where work orders go (`WorkOrderSink`); the demo implementation posts them to the simulated technicians |
 | `app/analytics/` | `spc.py` Western Electric rules, `health.py` EWMA + RUL, `kpi.py` availability and strategy comparison |
 | `app/mes/service.py` | Lot creation, dispatch rule (priority then FIFO), hold release |
-| `app/api/routes.py` | REST endpoints and the `/api/ws` WebSocket |
+| `app/fab.py` | `Fab`: what the API needs from a fab. `LocalFab` wraps an in-process host |
+| `app/commands.py` | Every console command (abort, work orders, lots, modes, scenarios) in one place, so local and cloud run the same code |
+| `app/api/routes.py` | REST endpoints and the `/api/ws` WebSocket, written against `Fab` |
+| `app/remote.py`, `app/remote_app.py` | Cloud API: `RemoteFab` reads Redis snapshots and Postgres, forwards commands over Redis |
+| `app/daemon.py`, `app/redisbus.py` | Cloud fab daemon: tools, technicians and host in one process, publishing to Redis |
 | `simulator/tool.py` | Simulated tools that speak HSMS as the passive side, with an ordered outbox / spool |
 | `simulator/crew.py` | Simulated technicians: receive work orders, work on the tool in ONLINE LOCAL |
 | `simulator/control.py` | Demo-only control API: scenario controls and the technicians' work-order inbox |
@@ -222,3 +226,30 @@ the wafer was in the chamber.
 | Host crashes mid-lot | On start, DISPATCHED/RUNNING lots go to HOLD for disposition; health models are rebuilt from `wafer_results` |
 | Handler throws | Peer gets `SxF0` (transaction abort) instead of waiting for T3 |
 | Slow browser | Per-client bounded queue; messages are dropped for that client, never block the equipment path |
+
+## Cloud deployment (Vercel)
+
+```
+browser ── /(.*) ──────▶ web  (static React build)
+        └─ /api/(.*) ──▶ api  (stateless FastAPI, any number of instances)
+                           │  reads snapshots      ▲ events, replies
+                           ▼  publishes commands   │
+                         Redis ◀──────────────────┐│
+                           ▲                      ││
+                         Postgres ◀── history ── fab daemon
+                                                  (tools ⇄ HSMS on localhost ⇄ host)
+```
+
+| Redis key / channel | Written by | Contents |
+| --- | --- | --- |
+| `fab:events` (pub/sub) | daemon, every 0.5 s | A batch of the live messages a local console would get over the WebSocket |
+| `fab:live` (key) | daemon, every 3 s | Modes, tool views, latest sensor frames, simulator state, viewer count |
+| `fab:logs` (key) | daemon, every 3 s | Recent trace points, activity and SECS log, for a console that (re)connects |
+| `fab:commands` (pub/sub) | API | `{id, cmd, args}`; also `viewer` / `viewer_left` heartbeats |
+| `fab:reply:<id>` (pub/sub) | daemon | `{ok, result}` or `{ok: false, status, detail}` |
+
+Commands run through `commands.execute()` in the daemon, so validation and
+error codes match the local app. If no daemon is subscribed, `PUBLISH` reports
+zero receivers and the API answers 503 at once; no answer in 10 s gives 504.
+The daemon also prunes old rows (events after 6 h, wafer results after 48 h)
+so the free database tier doesn't fill up.

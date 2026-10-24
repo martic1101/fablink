@@ -171,6 +171,54 @@ moment. The recording is about 0.3 MB gzip-compressed. The
 [Pages workflow](.github/workflows/pages.yml) builds and publishes it on
 every push to `main`.
 
+## Deploying to Vercel
+
+The repository is also set up as one Vercel project with several services
+([`vercel.json`](vercel.json)):
+
+| Name | Kind | Path | What it runs |
+| --- | --- | --- | --- |
+| `web` | service, public | `/(.*)` | The React console (Vite build of `frontend/`) |
+| `api` | service, public | `/api/(.*)` | [`app/vercel_api.py`](backend/app/vercel_api.py): the same REST + WebSocket routes, stateless |
+| `fab` | daemon, internal | none | [`app/daemon.py`](backend/app/daemon.py): the 4 simulated tools, the technicians and the host, in one long-running container |
+
+A Vercel function can't hold four HSMS connections open for hours, so the fab
+runs as a daemon and the API only reads and forwards. They share two stores:
+PostgreSQL for history (lots, alarms, work orders) and Redis for the live
+part: event batches and state snapshots from the daemon, and console commands
+to it. A daemon can't receive requests, so commands go over Redis pub/sub and
+the answer comes back on a per-request channel. There are no service bindings:
+`web` and `api` are reached through the rewrites, and a daemon can't be a
+binding target.
+
+To keep within free plans, the daemon **pauses the fab when nobody is
+watching**: an open console announces itself (and repeats every 30 s); 60 s
+after the last one leaves, simulated time stops and nothing is written. While
+paused it uses no Redis commands; running, it uses about 3 a second, so a
+free Upstash plan covers roughly 50 watched hours a month. An operator's Pause is never undone by a new
+viewer.
+
+Steps (in the Vercel dashboard):
+
+1. Import the GitHub repository as a new project. Vercel reads `vercel.json`.
+2. Add **Neon** (Postgres) and **Upstash** (Redis) from the Marketplace and
+   connect them to the project. They set `DATABASE_URL`,
+   `DATABASE_URL_UNPOOLED` and `KV_URL` / `REDIS_URL`; the app accepts these
+   as given.
+3. Optional: `SIM_SPEED` (default 2), `IDLE_PAUSE_SECONDS` (default 60, `0`
+   keeps it running).
+4. Deploy. Daemons run in production deployments only.
+
+The same topology runs locally with Docker Compose:
+`docker compose --profile split up --build fab api-cloud`, then open
+http://localhost:8001. CI does this on every push (`e2e-split`).
+
+Not verified on Vercel itself yet: the console's WebSocket through the `api`
+rewrite (Vercel lists WebSockets as beta, and a function's 300 s limit means
+the console reconnects every few minutes, which it handles), and that Upstash
+delivers pub/sub to a daemon as Redis does. `make demo` remains the single
+process version with nothing to set up.
+
 ## SECS/GEM scope
 
 Written from scratch for learning; no third-party SECS library is used.
@@ -243,6 +291,8 @@ backend/tests/
                        manual work orders, reconnect and replay, duplicate events,
                        partial-lot release, restart recovery, each scenario's activity
   test_api.py          REST validation, error codes, work orders, WebSocket snapshot
+  test_split.py        the Vercel split: daemon <-Redis-> stateless API, idle pause and
+                       wake-up, command round trip, provider database URLs
 ```
 
 The integration tests run the real simulator and crew against the real host
